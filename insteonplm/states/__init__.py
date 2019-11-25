@@ -120,4 +120,8 @@ class State():
         """Save state value and notify listeners of the change."""
         self._value = val
         for callback in self._observer_callbacks:
+            _LOGGER.debug('_update_subscribers state %s:0x%x updating '
+                          'subscribers with level 0x%x', self.address.human,
+                          self.group, val)
+
             callback(self._address, self._group, val)

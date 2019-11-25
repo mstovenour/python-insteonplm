@@ -31,6 +31,7 @@ from insteonplm.utils import (byte_to_housecode,
                               byte_to_unitcode,
                               rawX10_to_bytes,
                               x10_command_type)
+from insteonplm.states.allLinkGroup import AllLinkGroup
 
 __all__ = ('PLM, Hub')
 _LOGGER = logging.getLogger(__name__)
@@ -395,6 +396,42 @@ class IM(Device, asyncio.Protocol):
                         device_list.append(device.address)
         return device_list
 
+    def trigger_All_Link_group(self, group, cmd_tuple):
+        """Trigger an All-Link Group using command in cmd_tupl."""
+        from .messages.standardSend import StandardSend
+        from .messages.messageFlags import MessageFlags
+        from .constants import MESSAGE_TYPE_ALL_LINK_BROADCAST
+
+        target = Address(bytearray([0x00, 0x00, group]))
+        flags = MessageFlags.template(MESSAGE_TYPE_ALL_LINK_BROADCAST, 0, 3, 3)
+        # ALL-Link broadcast cmd2 is always 0x00
+        msg = StandardSend(target, cmd_tuple, cmd2=0x00, flags=flags)
+        self.send_msg(msg)
+        _LOGGER.debug('Broadcast ALL-Link Group 0x%x cmd1: 0x%x cmd2: 0x%x',
+                      group, cmd_tuple['cmd1'], 0x00)
+
+        # Find all the responders to this PLM ALL-Link Group from PLM ALDB
+        device_list = self._find_group_controlled_devices(group)
+
+        for device in device_list:
+            _LOGGER.debug('Sending Cleanup to %s for ALL-Link group 0x%x',
+                          device.address.human, group)
+            # find responder entries in the device's ALDB
+            device.ALL_Link_cleanup(group, cmd_tuple)
+
+    def _find_group_controlled_devices(self, group):
+        """Identify all devices where PLM is controller for ALL-Link group."""
+        device_list = []
+
+        for rec_num in self._aldb:
+            rec = self._aldb[rec_num]
+            if (rec.control_flags.is_controller and rec.group == group):
+                if rec.address.id not in device_list:
+                    device = self._devices[rec.address.id]
+                    device_list.append(device)
+
+        return device_list
+
     async def _setup_devices(self):
         await self.devices.load_saved_device_info()
         _LOGGER.info('Found %d saved devices',
@@ -689,6 +726,11 @@ class IM(Device, asyncio.Protocol):
             _LOGGER.debug('Device %s already loaded from saved data or '
                           'overrides', msg.address.hex)
 
+        # If this is a controller entry, create a allLinkGroup state.  These
+        # entries are used for PLM controlled scenes.
+        if msg.isController:
+            self._add_controller(msg.group)
+
         self._next_all_link_rec_nak_retries = 0
         self._get_next_all_link_record()
 
@@ -706,7 +748,33 @@ class IM(Device, asyncio.Protocol):
             callback = self._cb_load_all_link_db_done.pop()
             callback()
 
+        # If PLM has ALL-Link group states add PLM to the linkedDevices class
+        # iterator This will trigger the client call back for a new device
+        if self._stateList:
+            self.devices[self._address.id] = self
+
         self._get_device_info()
+
+    def _add_controller(self, group):
+        """Add ALL-Link Group state object to the IM device.
+
+        State object represents controller entries in the PLM ALDB.  This
+        exposes PLM ALL-Link groups as controllable states.
+
+        Parameters:
+        group: ALL-Link group number
+
+        Returns:
+        None
+
+        """
+        if group not in self._stateList:
+            # Only add group state on the first occurance in the ALDB
+            _LOGGER.info('Creating IM state for ALL-Link group 0x%x', group)
+            self._stateList[group] = AllLinkGroup(
+                self._address, "ALL-LinkGroup{}".format(group), group,
+                self._send_msg, self._message_callbacks, 0x00,
+                self.trigger_All_Link_group)
 
     def _get_device_info(self):
         _LOGGER.debug('Starting _get_device_info')

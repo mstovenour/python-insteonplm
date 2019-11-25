@@ -82,6 +82,34 @@ class OnOffStateBase(State):
         else:
             self._update_subscribers(0xff)
 
+    def handle_ALL_Link_cleanup_ack(self, msg, recall_level):
+        """Update the states subscribers with the new level.
+
+        For the ALL-Link recall message, the recall level is set during the
+        devices ALDB discovery.  If ALDB has not been read, the default level
+        is 255.  For all other ALL-Link messages the level is based only on the
+        command (on=255, off=0)
+        """
+        level = 255
+        cmd1 = msg.cmd1
+        if cmd1 == COMMAND_LIGHT_ON_0X11_NONE.get('cmd1', None):
+            level = recall_level
+        elif cmd1 == COMMAND_LIGHT_ON_FAST_0X12_NONE.get('cmd1', None):
+            level = 255
+        elif cmd1 == COMMAND_LIGHT_OFF_0X13_0X00.get('cmd1', None):
+            level = 0
+        elif cmd1 == COMMAND_LIGHT_OFF_FAST_0X14_0X00.get('cmd1', None):
+            level = 0
+        else:
+            _LOGGER.error('AlL-Link_cleanup_ack device %s:0x%x command '
+                          'unknown 0x%x', msg.address.human, self.group, cmd1)
+
+        _LOGGER.debug('AlL-Link_cleanup_ack device %s:0x%x updating '
+                      'subscribers with level 0x%x from command 0x%x',
+                      self.address.human, self.group, level, cmd1)
+
+        self._update_subscribers(level)
+
     def _register_messages(self):
         """Register messages to listen for."""
         template_on_group = StandardReceive.template(
