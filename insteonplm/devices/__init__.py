@@ -27,8 +27,8 @@ from insteonplm.constants import (
     MESSAGE_TYPE_ALL_LINK_CLEANUP,
     MESSAGE_FLAG_DIRECT_MESSAGE_NAK_0XA0,
     MESSAGE_STANDARD_MESSAGE_RECEIVED_0X50,
-    MESSAGE_EXTENDED_MESSAGE_RECEIVED_0X51
-)
+    MESSAGE_EXTENDED_MESSAGE_RECEIVED_0X51,
+    MESSAGE_TYPE_ALL_LINK_BROADCAST)
 from insteonplm.messagecallback import MessageCallback
 from insteonplm.messages.allLinkComplete import AllLinkComplete
 from insteonplm.messages.extendedReceive import ExtendedReceive
@@ -43,7 +43,7 @@ _LOGGER = logging.getLogger(__name__)
 DIRECT_ACK_WAIT_TIMEOUT = 3
 ALDB_RECORD_TIMEOUT = 10
 ALDB_RECORD_RETRIES = 20
-ALDB_ALL_RECORD_TIMEOUT = 30
+ALDB_ALL_RECORD_TIMEOUT = 120
 ALDB_ALL_RECORD_RETRIES = 5
 
 
@@ -215,9 +215,9 @@ class Device():
                       self.address.human, group)
         flags = MessageFlags.template(MESSAGE_TYPE_ALL_LINK_CLEANUP, 0, 3, 3)
         msg = StandardSend(self._address, cmd_tuple, cmd2=group, flags=flags)
-        self._send_msg(msg, self._handle_ALL_Link_cleanup_ack)
+        self._send_msg(msg, self._handle_ALL_Link_cleanup)
 
-    def _handle_ALL_Link_cleanup_ack(self, msg):
+    def _handle_ALL_Link_cleanup(self, msg):
         _LOGGER.debug('Received ALL-Link Cleanup ACK from %s; ALL-Link group '
                       '0x%x; looking for responder states',
                       msg.address.human, msg.cmd2)
@@ -226,16 +226,10 @@ class Device():
         responders = self._find_group_responder_states(msg.target, msg.cmd2)
 
         for responder in responders:
-            _LOGGER.debug('Calling %s:0x%x:handle_ALL_Link_cleanup_ack',
+            _LOGGER.debug('Calling %s:0x%02x:handle_ALL_Link_cleanup',
                           self._address.human, responder)
-            if hasattr(self.states[responder], 'handle_ALL_Link_cleanup_ack'):
-                self.states[responder].handle_ALL_Link_cleanup_ack(
-                    msg, responders[responder])
-            else:
-                _LOGGER.warning('Device %s:0x%x has no '
-                                'handle_ALL_Link_cleanup_ack() method.  '
-                                'Cannot perform ALL-Link cleanup',
-                                self._address.human, responder)
+            self.states[responder].handle_ALL_Link_cleanup(
+                msg, responders[responder])
 
     def _find_group_responder_states(self, ctl, ctl_group):
         _LOGGER.debug('Looking for responder to controller %s:0x%x',
@@ -729,11 +723,21 @@ class Device():
         self._message_callbacks.add(template_all_link_complete,
                                     self._handle_all_link_complete)
 
+        template_All_Link_broadcast = StandardReceive.template(
+            flags=MessageFlags.template(MESSAGE_TYPE_ALL_LINK_CLEANUP, None))
+        self._message_callbacks.add(template_All_Link_broadcast,
+                                    self._handle_All_Link_broadcast)
+
+        template_All_Link_cleanup = StandardReceive.template(
+            flags=MessageFlags.template(MESSAGE_TYPE_ALL_LINK_BROADCAST, None))
+        self._message_callbacks.add(template_All_Link_cleanup,
+                                    self._handle_All_Link_broadcast)
+
     # Send / Receive message processing
     def receive_message(self, msg):
         """Receive a messages sent to this device."""
         _LOGGER.debug('Starting Device.receive_message for %s',
-                      msg.address.human)
+                      self.address.human)
         if hasattr(msg, 'isack') and msg.isack:
             _LOGGER.debug('Got Message ACK %s', id(msg))
             if self._sent_msg_wait_for_directACK.get('callback') is not None:
@@ -800,8 +804,24 @@ class Device():
             if msg.matches_pattern(prev_msg):
                 ret_val = True
 
+        # Add current message to recent list
         self._recent_messages.put_nowait(
             {"msg": msg, "received": datetime.datetime.now()})
+
+        # If an ALL-Link Broadcast was successfully received the ALL-Link
+        # cleanup should be considered a duplicate if not a 0x06 status report
+        if(msg.flags.isAllLinkBroadcast and msg.cmd1 != MESSAGE_ACK):
+            # Fabricate duplicate all-link cleanup
+            dup_target = self._plm.address
+            dup_group = msg.targetHi
+            dup_flags = MessageFlags.template(MESSAGE_TYPE_ALL_LINK_CLEANUP,
+                                              0, 3, 3)
+            dup_msg = StandardReceive(msg.address, dup_target,
+                                      {'cmd1': msg.cmd1, 'cmd2': dup_group},
+                                      flags=dup_flags)
+            self._recent_messages.put_nowait(
+                {"msg": dup_msg, "received": datetime.datetime.now()})
+
         return ret_val
 
     def _send_msg(self, msg, callback=None, on_timeout=False):
@@ -869,6 +889,88 @@ class Device():
 
     def _aldb_loaded_callback(self):
         self._plm.devices.save_device_info()
+
+    def _handle_All_Link_broadcast(self, msg):
+        """Process ALL-Link broadcast or cleanup received from devices.
+
+        Parameters:
+        msg.address: controller's address
+        msg.targetHi: group triggered on controller for broadcast msg
+        msg.cmd2: group triggers on controller for clean up msg
+
+        Searches for controller's address and group triggered in this devices
+        ALDB to find this devices responding group.
+
+        """
+        if msg.cmd1 != MESSAGE_ACK:  # Ignore 0x06 status reports
+
+            # Don't bother searching the ALDB if there isn't at least one
+            # state that can respond to controllers
+            responder = False
+            for state in self._stateList:
+                if self._stateList[state].is_responder:
+                    responder = True
+                    break
+
+            if responder:
+                ctl_group = msg.targetHi
+                _LOGGER.debug('_handle_All_Link_broadcast msg: %s for '
+                              'device %s', id(msg), self.address.human)
+                if not ctl_group:
+                    # Not a broadcast message so must be a cleanup
+                    ctl_group = msg.cmd2
+
+                resp_groups = self._find_responder_groups(msg.address,
+                                                          ctl_group)
+                for resp_group in resp_groups:
+                    if self._stateList[resp_group]:
+                        self._stateList[resp_group].handle_ALL_Link_cleanup(
+                            msg, resp_groups[resp_group])
+                    else:
+                        _LOGGER.warning('ALDB Responder record maps to '
+                                        'nonexistent state')
+
+    def _find_responder_groups(self, ctl_address, ctl_group):
+        """Identify which PLM group responds to ctl / ctl_group.
+
+        Parameters:
+        ctl_address: address object of controller that sent ALL-Link command
+        ctl_group: group that was triggered on the controller
+
+        Returns:
+        dictionary of all responding groups on this device
+            key: responding group on this device from data3
+            value: recall_level from data1
+
+        NOTE:  The IM class overrides this method for the PLM's underlying
+        device object.
+
+        """
+        _LOGGER.debug('_find_responder_groups: looking for ctl: %s, '
+                      'ctl_group: 0x%02x on device %s', ctl_address.human,
+                      ctl_group, self.address.human)
+        groups = {}
+        if self._aldb:
+            for rec_num in self._aldb:
+                rec = self._aldb[rec_num]
+                if(rec.control_flags.is_responder and
+                   rec.group == ctl_group and
+                   rec.address == ctl_address):
+                    # Recall level is stored in data1
+                    # This device's group is stored in data3
+                    data3 = rec.data3 if rec.data3 != 0 else 1
+                    groups[data3] = rec.data1
+            _LOGGER.debug('Found %d responders on device %s', len(groups),
+                          self.address.human)
+        else:
+            if self._aldb.status == ALDBStatus.LOADED:
+                _LOGGER.warning('No responders found; ALDB is empty %s',
+                                self.address.human)
+            else:
+                _LOGGER.warning('No responders found; ALDB is not loaded %s',
+                                self.address.human)
+
+        return groups
 
 
 # pylint: disable=too-many-instance-attributes

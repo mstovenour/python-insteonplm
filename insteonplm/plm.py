@@ -13,7 +13,8 @@ from insteonplm.constants import (MESSAGE_ACK,
                                   X10CommandType,
                                   X10_COMMAND_ALL_UNITS_OFF,
                                   X10_COMMAND_ALL_LIGHTS_ON,
-                                  X10_COMMAND_ALL_LIGHTS_OFF)
+                                  X10_COMMAND_ALL_LIGHTS_OFF,
+                                  MESSAGE_STANDARD_MESSAGE_RECEIVED_0X50)
 from insteonplm.address import Address
 from insteonplm.devices import Device, ALDBRecord, ALDBStatus
 from insteonplm.linkedDevices import LinkedDevices
@@ -650,10 +651,20 @@ class IM(Device, asyncio.Protocol):
     def _process_recv_queue(self):
         msg = self._recv_queue.pop()
         _LOGGER.debug('RX: %s:%s', id(msg), msg)
-        callbacks = self._message_callbacks.get_callbacks_from_message(msg)
         if hasattr(msg, 'isack') or hasattr(msg, 'isnak'):
             self._acknak_queue.put_nowait(msg)
-        if hasattr(msg, 'address'):
+
+        if(msg.code == MESSAGE_STANDARD_MESSAGE_RECEIVED_0X50 and
+           (msg.flags.isAllLinkBroadcast or msg.flags.isAllLinkCleanup)):
+            # Each device should look at the responder entries in its ALDB
+            # to see if the device should respond to this sender/sender group
+            # Responding means updating subscribers with the correct level
+            if msg.cmd1 != MESSAGE_ACK:  # not 0x06 status report
+                for device in self.devices:
+                    if self.devices[device]:
+                        self.devices[device].receive_message(msg)
+
+        elif hasattr(msg, 'address'):
             device = self.devices[msg.address.hex]
             if device:
                 device.receive_message(msg)
@@ -664,8 +675,51 @@ class IM(Device, asyncio.Protocol):
                         device.receive_message(msg)
                 except KeyError:
                     pass
-        for callback in callbacks:
-            self._loop.call_soon(callback, msg)
+
+        # This check is a hack because message processing is not isolated
+        # between IM and Device (nugget/python-insteonplm#203)
+        if(msg.code != MESSAGE_STANDARD_MESSAGE_RECEIVED_0X50 or not
+           (msg.flags.isAllLinkBroadcast or msg.flags.isAllLinkCleanup)):
+            callbacks = self._message_callbacks.get_callbacks_from_message(msg)
+            for callback in callbacks:
+                _LOGGER.debug('Scheduling msg callback: %s', callback)
+                self._loop.call_soon(callback, msg)
+
+    def _find_responder_groups(self, ctl_address, ctl_group):
+        """Identify which PLM group responds to ctl / ctl_group.
+
+        Parameters:
+        ctl_address: address object of controller that sent ALL-Link command
+        ctl_group: group that was triggered on the controller
+
+        Returns:
+        dictionary of all responding groups on this device
+            key: responding group on this device from data3
+            value: recall_level from data1
+
+        NOTE: This overrides the same method in Device because the PLM requires
+        different logic for finding the responder groups.  The PLM does not
+        store the local responding group in its responder records (devices do
+        this).  The only option is to look for all matching "controller"
+        entries.  This assumes if PLM is controller it must also be responder
+        for the ALL-Link group.
+
+        """
+        _LOGGER.debug('_find_responder_groups: looking for ctl: %s, '
+                      'ctl_group: 0x%x on device %s', ctl_address.human,
+                      ctl_group, self.address.human)
+        groups = {}
+        for rec_num in self._aldb:
+            rec = self._aldb[rec_num]
+            if (rec.control_flags.is_controller and rec.data1 == ctl_group and
+                    rec.address == ctl_address):
+                # Recall level is always "on" for PLM responders
+                groups[rec.group] = 0xff
+
+        _LOGGER.debug('Found %d responders on device %s', len(groups),
+                      self.address.human)
+
+        return groups
 
     def _unpack_buffer(self):
         buffer = bytearray()

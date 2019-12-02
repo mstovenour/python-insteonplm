@@ -139,12 +139,40 @@ class AllLinkGroup(State):
         self._ALL_Link_cleanup_method(self.group,
                                       COMMAND_LIGHT_DIM_ONE_STEP_0X16_0X00)
 
+    def handle_ALL_Link_cleanup(self, msg, recall_level):
+        """Update the state's subscribers with the new level or fixed level."""
+        level = 255
+        if msg.cmd1 == COMMAND_LIGHT_ON_0X11_NONE.get('cmd1', None):
+            level = recall_level
+        elif msg.cmd1 == COMMAND_LIGHT_ON_FAST_0X12_NONE.get('cmd1', None):
+            level = 255
+        elif msg.cmd1 == COMMAND_LIGHT_OFF_0X13_0X00.get('cmd1', None):
+            level = 0
+        elif msg.cmd1 == COMMAND_LIGHT_OFF_FAST_0X14_0X00.get('cmd1', None):
+            level = 0
+        else:
+            _LOGGER.error('AlL-Link_cleanup device %s:0x%02x command '
+                          'unknown 0x%02x', msg.address.human, self.group,
+                          msg.cmd1)
+
+        _LOGGER.debug('AlL-Link_cleanup device %s:0x%02x updating '
+                      'subscribers with level 0x%x from command 0x%02x',
+                      self.address.human, self.group, level, msg.cmd1)
+
+        self._update_subscribers(level)
+
+    # pylint: disable=unused-argument
     def _on_message_received(self, msg):
-        cmd2 = msg.cmd2 if msg.cmd2 else 255
-        self._update_subscribers(cmd2)
+        _LOGGER.debug('AlL-Link_cleanup received device %s:0x%x updating '
+                      'subscribers with level 0x%x from command 0x%x',
+                      self.address.human, self.group, 0xff, msg.cmd1)
+        self._update_subscribers(0xff)
 
     # pylint: disable=unused-argument
     def _off_message_received(self, msg):
+        _LOGGER.debug('AlL-Link_cleanup received device %s:0x%x updating '
+                      'subscribers with level 0x%x from command 0x%x',
+                      self.address.human, self.group, 0x00, msg.cmd1)
         self._update_subscribers(0x00)
 
     # pylint: disable=unused-argument
@@ -159,5 +187,4 @@ class AllLinkGroup(State):
                           self._status_message_received)
 
     def _status_message_received(self, msg):
-        _LOGGER.debug("DimmableSwitch status message received called")
         self._update_subscribers(msg.cmd2)

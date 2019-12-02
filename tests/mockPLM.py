@@ -2,6 +2,7 @@
 import logging
 from insteonplm.messagecallback import MessageCallback
 from insteonplm.linkedDevices import LinkedDevices
+from insteonplm.address import Address
 
 _LOGGER = logging.getLogger(__name__)
 _LOGGER.setLevel(logging.DEBUG)
@@ -16,11 +17,17 @@ class MockPLM():
         self._message_callbacks = MessageCallback()
         self.loop = loop
         self.devices = LinkedDevices()
+        self._address = Address('1edc30')
 
     @property
     def message_callbacks(self):
         """Return the message callback list."""
         return self._message_callbacks
+
+    @property
+    def address(self):
+        """Return the INSTEON device address."""
+        return self._address
 
     # pylint: disable=unused-argument
     def send_msg(self, msg, wait_nak=True, wait_timeout=2):

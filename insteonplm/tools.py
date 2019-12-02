@@ -125,7 +125,7 @@ class Tools():
     # pylint: disable=no-self-use
     def async_state_change_callback(self, addr, state, value):
         """Log the state change."""
-        _LOGGING.info('Device %s state 0x%x value is changed to %s',
+        _LOGGING.info('Device %s state 0x%02x value is changed to %s',
                       addr.human, state, value)
 
     def async_aldb_loaded_callback(self):
@@ -775,7 +775,6 @@ class Commander():
             addr = params[0]
         except IndexError:
             _LOGGING.error('Device address required.')
-            self.do_help('load_aldb')
 
         try:
             clear_prior = params[1]

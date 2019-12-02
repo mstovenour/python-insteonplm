@@ -237,8 +237,8 @@ class DimmableSwitch(State):
         _LOGGER.debug("DimmableSwitch status message received called")
         self._update_subscribers(msg.cmd2)
 
-    def handle_ALL_Link_cleanup_ack(self, msg, recall_level):
-        """Update the state's subscribers with the new level.
+    def handle_ALL_Link_cleanup(self, msg, recall_level):
+        """Update the state's subscribers with the new level or a fixed level.
 
         For the ALL-Link recall message, the recall level is set during the
         devices ALDB discovery.  If ALDB has not been read, the default level

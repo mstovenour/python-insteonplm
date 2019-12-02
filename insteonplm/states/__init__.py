@@ -116,12 +116,19 @@ class State():
         _LOGGER.debug("Registered callback for state: %s", self._stateName)
         self._observer_callbacks.append(callback)
 
+    # pylint: disable=unused-argument
+    def handle_ALL_Link_cleanup(self, msg, recall_level):
+        """Update the state's subscribers with the new level or fixed level."""
+        _LOGGER.warning('State %s has no handle_ALL_Link_cleanup() method.  '
+                        'Cannot perform ALL-Link cleanup',
+                        self.__class__.__name__)
+
     def _update_subscribers(self, val):
         """Save state value and notify listeners of the change."""
         self._value = val
         for callback in self._observer_callbacks:
-            _LOGGER.debug('_update_subscribers state %s:0x%x updating '
-                          'subscribers with level 0x%x', self.address.human,
+            _LOGGER.debug('_update_subscribers state %s:0x%02x updating '
+                          'subscribers with level 0x%02x', self.address.human,
                           self.group, val)
 
             callback(self._address, self._group, val)
